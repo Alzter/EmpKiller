@@ -36,7 +36,12 @@ class Scraper:
         fv('1', '_txtUsername', username)
         fv('1', '_txtPassword', password)
         submit()
-        not_find("_tblErrorTable") # This element only appears if login fails.
+
+        try:
+            not_find("_tblErrorTable") # This element only appears if login fails.
+        except Exception as e:
+            raise Exception("401 Unauthorised\nForbidden from accessing EmpLive roster, check token.json is correct.")
+        
         code('200')
 
         follow("Personal Roster")
