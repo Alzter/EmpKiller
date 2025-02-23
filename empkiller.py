@@ -4,9 +4,17 @@ import requests
 import re
 import pandas as pd
 from io import StringIO
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from twill.commands import *
 import os
+from os import path
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+import pytz
+from tzlocal import get_localzone
 
 class Scraper:
     """
@@ -362,3 +370,189 @@ class EmpKiller:
         """
         starting_date = datetime.today() + timedelta(days = weeks_ahead * 7)
         return self.get_roster_by_date(starting_date, max_reloads=max_reloads)
+
+class GoogleCalendar:
+    """
+        Wrapper class for Google Calendar's API.
+    """
+    def __init__(self, creds_file, token_file = 'api/token.json', scopes = ['https://www.googleapis.com/auth/calendar']):
+        """
+            Authenticate to Google Calendar API.
+
+            Args:
+                creds_file (str): Filepath to API OAuth2.0 Client credentials.
+                token_file (str): Where to create API token to access API without login on subsequent access.
+                scopes (list): Which Google APIs to request permission for.
+
+            Returns:
+                None
+        """
+        creds = None # API access credentials.
+        
+        # The file token.json stores the user's access and refresh tokens, and is
+        # created automatically when the authorization flow completes for the first
+        # time.
+        if os.path.exists(token_file):
+            creds = Credentials.from_authorized_user_file(token_file)
+
+        # If there are no (valid) credentials available, let the user log in.
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+
+            else:
+                flow = InstalledAppFlow.from_client_secrets_file(creds_file, scopes)
+                creds = flow.run_local_server(port=0)
+
+            # Create token file so user doesn't have to log in again.
+            with open(token_file, "w") as token:
+                token.write(creds.to_json())
+
+        try:
+            self.service = build("calendar", "v3", credentials=creds)
+
+        except HttpError as error:
+            raise Exception(f"Error accessing Google Calendar API:\n{error}")
+    
+    def to_timestamp(self, time : datetime, timezone : str = get_localzone().key):
+        """
+        Convert naive datetime timestamp into a RFC3339 timestamp in UTC timezone.
+
+        Args:
+            time (datetime) : The naive datetime timestamp.
+            timezone (str): The timezone to use. Defaults to the user's local timezone.
+        
+        Returns:
+            timestamp (str) : The RFC3339 timestamp in UTC timezone.
+        """
+
+        # Get the user's local timezone using tzlocal
+        # local_tz = get_localzone().key
+
+        # Convert timezone string into pytz format
+        local_tz = pytz.timezone(timezone)
+
+        # Localize the naive timestamp (assume it's in the local timezone)
+        localized_timestamp = local_tz.localize(time)
+
+        # Convert to UTC
+        utc_timestamp = localized_timestamp.astimezone(pytz.utc)
+
+        # Format the timestamp in RFC3339 (ISO 8601) format with UTC offset
+        rfc3339_timestamp = utc_timestamp.isoformat()
+
+        return rfc3339_timestamp
+
+    def create_event(
+        self,
+        start_time : datetime,
+        end_time : datetime,
+        name : str,
+        location : str,
+        description : str,
+        calendarId : str = 'primary',
+        overwrite : bool = True,
+        reminder_time : int = 30
+    ):
+        """
+            Create an event using Google Calendar API.
+
+            Args:
+                start_time (datetime): When the event shall start.
+                end_time (datetime): When the event shall end.
+                name (str): Name of the event.
+                location (str): Event location.
+                description (str): Event description.
+                calendarId (str): Which calendar to update. Defautls to ``primary``.
+                overwrite (bool): Whether to delete any events which overlap this event.
+                reminder_time (int): How many minutes before the event to send you a reminder notification.
+            
+            Returns:
+                event_id (str): The ID of the created event.
+        """
+
+        cal = self.service
+        start_time = self.to_timestamp(start_time)
+        end_time = self.to_timestamp(end_time)
+
+        # Delete overlapping events
+        if overwrite:
+            # Obtain overlapping events
+            events = cal.events().list(
+                calendarId=calendarId,
+                timeMin=start_time,
+                timeMax=end_time,
+                timeZone="UTC",
+            ).execute().get("items", [])
+
+            # Filter out events which do not have same name (REMOVED)
+            # events = list(filter(lambda x : x.get('summary') == name, events))
+
+            # Delete overlapping events
+            if len(events) > 0 and overwrite:
+                for event in events:
+                    cal.events().delete(
+                        calendarId=calendarId,
+                        eventId=event['id']
+                    ).execute()
+        
+        # Create new event data structure
+        event = {
+            'summary':name,
+            'location':location,
+            'description':description,
+            'start' : {
+                'dateTime': start_time,
+                'timeZone' : "UTC"
+            },
+
+            'end' : {
+                'dateTime': end_time,
+                'timeZone' : "UTC"
+            },
+
+            'reminders': {
+                'useDefault': False,
+                'overrides': [
+                    {'method': 'popup', 'minutes': reminder_time},
+                ]
+            }
+        }
+        
+        # Insert event into user's calendar
+        created_event = cal.events().insert(
+            calendarId=calendarId,
+            body=event
+        ).execute()
+
+        # Return ID of the event
+        return created_event['id']
+
+    def add_roster(self, roster_data, reminder_time : int = 30, name : str = "Work", location : str = None, calendarId : str = 'primary', overwrite : bool = True):
+        """
+            For a given roster, add all shifts onto a user's Google Calendar.
+
+            Args:
+                roster_data (DataFrame): EmpLive working roster DataFrame. Use ``EmpKiller`` to acquire.
+                reminder_time (int): How many minutes before the start of each shift you should receive a reminder notification.
+                name (str): What name to use for the shift events. Defaults to ``"Work"``.
+                location (str): What location to use for the shift events. Defaults to ``None``.
+                calendarId (str): Which calendar to add the events to. Defaults to ``"primary"``.
+                overwrite (bool): Whether to delete overlapping events if they already exist. Defaults to ``True``.
+            
+            Returns:
+                None
+        """
+
+        for shift in roster_data.to_dict(orient="records"):
+            
+            self.create_event(
+                start_time = shift["Start Time"],
+                end_time = shift["End Time"],
+                name = name,
+                location = location,
+                description = shift["Role"],
+                calendarId = calendarId,
+                overwrite = overwrite,
+                reminder_time=reminder_time
+            )
