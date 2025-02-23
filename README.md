@@ -37,5 +37,4 @@ emp.get_roster(-1) # Get working roster for last week
 ```
 
 # TODO
-- Document everything properly
 - Google Calendar export functionality

@@ -11,9 +11,25 @@ import os
 class Scraper:
     """
         EmpLive ESS home page web scraper.
+
+        This class opens a browser using Twill
+        to access EmpLive ESS remotely using
+        your login credentials, then extracts
+        raw HTML from the website and reads
+        it with BeautifulSoup.
     """
 
     def __init__(self, username, password):
+        """
+            Opens a new browser with Twill and logs into EmpLive ESS.
+
+            Args:
+                username (str): EmpLive ESS username. Format: ``user@domain``.
+                password (str): EmpLive ESS password.
+            
+            Returns:
+                None
+        """
         reset_browser()
         go("https://ess.emplive.net/")
 
@@ -79,7 +95,10 @@ class Scraper:
         return soup
 
 class Extractor:
-
+    """
+        Parses usable data structures
+        out of EmpLive HTML dumps.
+    """
     def __init__(self):
         pass
     
@@ -177,7 +196,9 @@ class Extractor:
     def get_period(self, home_page : BeautifulSoup):
 
         """
-            Get the time period for the current roster.
+            The EmpLive ESS website can only display rosters one week ("period")
+            at a time. This method returns the date of the currently selected
+            period from the EmpLive website as a datetime.
 
             Args:
                 home_page (BeautifulSoup): A web scrape of the EmpLive ESS home page.
@@ -197,11 +218,19 @@ class Extractor:
 
 class EmpKiller:
     """
-        Pseudo API for EmpLive ESS.
-        Allows you to obtain your EmpLive roster without having to use the website.
+        API for EmpLive ESS.
+        This class opens a browser to access EmpLive ESS remotely using your login credentials.
     """
     def __init__(self, login_data):
-        
+        """
+            Opens a new browser and logs into EmpLive ESS.
+
+            Args:
+                login_data (str): The file path to a json file storing your username and password.
+            
+            Returns:
+                None
+        """
         with open(login_data) as f:
             data = json.load(f)
             f.close()
@@ -211,14 +240,54 @@ class EmpKiller:
         self.reload_page()
 
     def reload_page(self):
+        """
+            Reloads the EmpLive ESS webpage.
+            This is needed to update the roster table after
+            selecting the 'Next Period' or 'Previous Period' buttons.
+
+            Args:
+                None
+            
+            Returns:
+                None
+        """
         self.page = self.sc.get_roster_page()
     
     def get_period(self):
+        """
+            The EmpLive ESS website can only display rosters one week ("period")
+            at a time. This method returns the date of the currently selected
+            period from the EmpLive website as a datetime.
+
+            Args:
+                None
+
+            Returns:
+                period (datetime): The starting day of the current roster.
+        """
         return self.ex.get_period(self.page)
 
     def go_to_week(self, starting_date, max_reloads = 10):
         """
+            Use the EmpLive website to access the roster
+            for any given week (period) starting at ``starting_date``.
 
+            Since EmpLive can only display one week (period)
+            of your roster at once, we must *manually click*
+            the "Next / Previous Period" buttons on the roster
+            page to navigate to the roster for any given week.
+
+            Args:
+                starting_date (datetime):
+                    The starting date for which week's roster you want to view.
+                    This date will automatically be converted to first day of the week if it is not already.
+                max_reloads (int):
+                    The maximum number of times this function may press the "Next / Previous Period"
+                    buttons on the EmpLive website to find the target roster period.
+                    If we don't reach the target period in time, this *will raise an Exception*!
+
+            Returns:
+                None
         """
         # Make starting_date the first day of the week.
         starting_date = starting_date - timedelta(days=starting_date.weekday())
@@ -248,11 +317,43 @@ class EmpKiller:
             # print(f"Desired period: {starting_date.strftime("%d/%m/%Y %I:%M:%S")}")
             # print(f"Difference: {(website_date - starting_date).days} days")
 
-    def get_roster_by_date(self, starting_date : datetime = datetime.today()):
-        self.go_to_week(starting_date)
+    def get_roster_by_date(self, starting_date : datetime = datetime.today(), max_reloads = 10):
+        """
+            Get *one week*'s roster from the EmpLive website using a starting date.
+
+            Args:
+                starting_date (datetime): 
+                    The starting date for which week's roster you want to obtain.
+                    This date will automatically be converted to first day of the week if it is not already.
+                max_reloads (int):
+                    The maximum number of times this function may press the "Next / Previous Period"
+                    buttons on the EmpLive website to find the target roster period.
+                    If we don't reach the target period in time, this *will raise an Exception*!
+            
+            Returns:
+                roster (DataFrame | None):
+                    The weekly roster as a DataFrame, or *None* if no roster exists for the given week.
+        """
+        self.go_to_week(starting_date, max_reloads=max_reloads)
         self.reload_page()
         return self.ex.get_roster(self.page)
     
-    def get_roster(self, weeks_ahead = 0):
+    def get_roster(self, weeks_ahead = 0, max_reloads=10):
+        """
+            Get *the current week*'s roster from the EmpLive website.
+
+            Args:
+                weeks_ahead (int): 
+                    How many weeks to look ahead or behind when obtaining the roster.
+                    The value ``1`` will return *next* week's roster, ``-1`` returns *last* week's roster, etc.
+                max_reloads (int):
+                    The maximum number of times this function may press the "Next / Previous Period"
+                    buttons on the EmpLive website to find the target roster period.
+                    If we don't reach the target period in time, this *will raise an Exception*!
+            
+            Returns:
+                roster (DataFrame | None):
+                    The weekly roster as a DataFrame, or *None* if no roster exists for the given week.
+        """
         starting_date = datetime.today() + timedelta(days = weeks_ahead * 7)
-        return self.get_roster_by_date(starting_date)
+        return self.get_roster_by_date(starting_date, max_reloads=max_reloads)
