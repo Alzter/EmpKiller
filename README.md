@@ -1,4 +1,4 @@
-# EmpKiller - EmpLive ESS Roster API
+# EmpKiller - EmpLive Roster API with Google Calendar Exporting
 Hate using EmpLive's terrible mobile app to see your work roster? EmpKiller is for you.
 
 This application acts as an API you can use to retrieve your EmpLive roster without having to use their awful user interface.
